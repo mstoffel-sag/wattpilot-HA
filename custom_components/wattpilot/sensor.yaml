@@ -212,6 +212,7 @@ sensor:
     name: "Inverter"
     description: "Connected solar inverter"
     icon: "mdi:solar-power"
+    enabled: False
     entity_category: diagnostic
     value_id: label
     html_unescape: True
