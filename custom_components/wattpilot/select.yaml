@@ -38,6 +38,8 @@ select:
       10019: "Czechia"
       10024: "Denmark DK1"
       10036: "Denmark DK2"
+      10055: "Denmark DK1 Tibber"
+      10056: "Denmark DK2 Tibber"
       10020: "Estonia"
       10004: "Finland"
       10015: "France"
