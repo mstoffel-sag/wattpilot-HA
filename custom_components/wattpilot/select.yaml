@@ -99,6 +99,30 @@ select:
     icon: "mdi:account-cancel"
     firmware: ">=38.5"
 
+  - id: ct
+    name: "Car"
+    description: "Car profile selected"
+    icon: "mdi:car-outline"
+    options:
+      default: "Standard"
+      kiaSoul: "Kia Soul"
+      renaultZoe: "Renault Zoe/Twingo"
+      MitsubishiImiev: "Mitsubishi iMiev"
+      citroenCZero: "Citroen c zero"
+      peugeotIon: "Peugeot iOn"
+      ecorsa: "Opel Corsa-e"
+      vwID3_2: "VW ID (SW <3.2)"
+      vwID3_4: "VW ID (SW 3.2-4.1)"
+      vwID5: "VW ID (SW 5.x)"
+      cupraBornStandard: "Cupra Born Standard"
+      cupraBornAlternative: "Cupra Born Alternativ"
+      fordExplorer: "Ford Explorer"
+      porscheTaycan: "Porsche Taycan"
+      SkodaEnyaq: "Skoda Enyaq"
+      daciaSpring: "Dacia Spring"
+      mercedes: "Mercedes"
+      ssangyong: "Ssangyong"
+      
   - id: ebo
     name: "Boost type"
     description: "Type of boost charge from battery"
