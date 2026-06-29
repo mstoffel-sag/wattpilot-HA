@@ -1,0 +1,197 @@
+name: CI — Test & HA Compatibility
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+env:
+  # Minimum HA version declared in hacs.json
+  HA_MIN_VERSION: "2024.4.0"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. HACS validation
+  #    Validates manifest.json, hacs.json, info.md and structure rules.
+  # -------------------------------------------------------------------------
+  hacs:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: HACS Action
+        uses: hacs/action@main
+        with:
+          category: integration
+
+  # -------------------------------------------------------------------------
+  # 2. hassfest — HA's own integration validation tool
+  #    Checks manifest fields, config_flow, translations, and more.
+  # -------------------------------------------------------------------------
+  hassfest:
+    name: Hassfest (HA Integration Checker)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master
+
+  # -------------------------------------------------------------------------
+  # 3. Unit tests (offline — no real charger or HA instance required)
+  #    Runs the pytest suite against the actual integration source files.
+  # -------------------------------------------------------------------------
+  tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements_test.txt
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  # -------------------------------------------------------------------------
+  # 4. HA compatibility check
+  #    Installs the declared minimum HA version and verifies the integration
+  #    can be imported cleanly (no syntax errors, no import-time crashes).
+  # -------------------------------------------------------------------------
+  ha-compatibility:
+    name: HA Compatibility (${{ matrix.ha-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Check minimum supported version + current stable
+        ha-version:
+          - "2024.4.0"
+          - "2024.12.0"
+          - "2025.6.0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Home Assistant ${{ matrix.ha-version }}
+        run: |
+          pip install "homeassistant==${{ matrix.ha-version }}" \
+            wattpilot>=0.2 \
+            pyyaml>=5.3.0 \
+            importlib_metadata>=4.0.0 \
+            aiofiles>=23.2.1 \
+            packaging>=24.0
+
+      - name: Verify integration imports cleanly
+        run: |
+          python - <<'EOF'
+          import sys, importlib, traceback, pathlib
+
+          # Add repo root to path so custom_components is findable
+          sys.path.insert(0, str(pathlib.Path(".").resolve()))
+
+          modules = [
+              "custom_components.wattpilot",
+              "custom_components.wattpilot.const",
+              "custom_components.wattpilot.utils",
+              "custom_components.wattpilot.entities",
+              "custom_components.wattpilot.sensor",
+              "custom_components.wattpilot.switch",
+              "custom_components.wattpilot.select",
+              "custom_components.wattpilot.number",
+              "custom_components.wattpilot.button",
+              "custom_components.wattpilot.update",
+              "custom_components.wattpilot.services",
+              "custom_components.wattpilot.diagnostics",
+              "custom_components.wattpilot.config_flow",
+          ]
+
+          failed = []
+          for mod in modules:
+              try:
+                  importlib.import_module(mod)
+                  print(f"  OK  {mod}")
+              except Exception as e:
+                  print(f"  FAIL {mod}: {e}")
+                  traceback.print_exc()
+                  failed.append(mod)
+
+          if failed:
+              print(f"\n{len(failed)} module(s) failed to import:")
+              for f in failed:
+                  print(f"  - {f}")
+              sys.exit(1)
+          else:
+              print(f"\nAll {len(modules)} modules imported successfully.")
+          EOF
+
+      - name: Validate manifest.json fields
+        run: |
+          python - <<'EOF'
+          import json, sys
+
+          with open("custom_components/wattpilot/manifest.json") as f:
+              manifest = json.load(f)
+
+          required_fields = ["domain", "name", "version", "config_flow",
+                             "documentation", "requirements", "codeowners", "iot_class"]
+          missing = [field for field in required_fields if field not in manifest]
+          if missing:
+              print(f"ERROR: Missing manifest fields: {missing}")
+              sys.exit(1)
+
+          print("manifest.json:")
+          for k, v in manifest.items():
+              print(f"  {k}: {v}")
+          print("\nAll required fields present.")
+          EOF
+
+      - name: Validate all YAML entity configs load correctly
+        run: |
+          python - <<'EOF'
+          import yaml, sys, pathlib
+
+          yaml_files = list(pathlib.Path("custom_components/wattpilot").glob("*.yaml"))
+          if not yaml_files:
+              print("No YAML files found.")
+              sys.exit(1)
+
+          failed = []
+          for f in sorted(yaml_files):
+              try:
+                  with open(f) as fh:
+                      data = yaml.safe_load(fh)
+                  # Each yaml file must be a non-empty dict
+                  assert isinstance(data, dict), f"Expected dict, got {type(data)}"
+                  print(f"  OK  {f.name}  ({len(data)} top-level keys)")
+              except Exception as e:
+                  print(f"  FAIL {f.name}: {e}")
+                  failed.append(f.name)
+
+          if failed:
+              sys.exit(1)
+          EOF
