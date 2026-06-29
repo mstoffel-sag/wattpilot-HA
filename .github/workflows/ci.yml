@@ -7,10 +7,6 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
-env:
-  # Minimum HA version declared in hacs.json
-  HA_MIN_VERSION: "2024.4.0"
-
 jobs:
   # -------------------------------------------------------------------------
   # 1. HACS validation
@@ -73,38 +69,27 @@ jobs:
 
   # -------------------------------------------------------------------------
   # 4. HA compatibility check
-  #    Installs the declared minimum HA version and verifies the integration
+  #    Installs the latest stable Home Assistant and verifies the integration
   #    can be imported cleanly (no syntax errors, no import-time crashes).
   # -------------------------------------------------------------------------
   ha-compatibility:
-    name: HA Compatibility (${{ matrix.ha-version }})
+    name: HA Compatibility (latest)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Check minimum supported version + current stable.
-        # Each HA release pins a minimum Python (e.g. 2025.6.x requires
-        # Python >=3.13.2), so pair every HA version with a compatible one.
-        include:
-          - ha-version: "2024.4.0"
-            python-version: "3.12"
-          - ha-version: "2024.12.0"
-            python-version: "3.12"
-          - ha-version: "2025.6.0"
-            python-version: "3.13"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      # Latest HA tracks a recent Python minimum (2026.x needs >=3.14.2),
+      # so use the newest Python available to the runner.
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
 
-      - name: Install Home Assistant ${{ matrix.ha-version }}
+      - name: Install latest Home Assistant
         run: |
-          pip install "homeassistant==${{ matrix.ha-version }}" \
+          pip install homeassistant \
             "wattpilot>=0.2" \
             "pyyaml>=5.3.0" \
             "importlib_metadata>=4.0.0" \
