@@ -82,29 +82,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Check minimum supported version + current stable
-        ha-version:
-          - "2024.4.0"
-          - "2024.12.0"
-          - "2025.6.0"
+        # Check minimum supported version + current stable.
+        # Each HA release pins a minimum Python (e.g. 2025.6.x requires
+        # Python >=3.13.2), so pair every HA version with a compatible one.
+        include:
+          - ha-version: "2024.4.0"
+            python-version: "3.12"
+          - ha-version: "2024.12.0"
+            python-version: "3.12"
+          - ha-version: "2025.6.0"
+            python-version: "3.13"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Home Assistant ${{ matrix.ha-version }}
         run: |
           pip install "homeassistant==${{ matrix.ha-version }}" \
-            wattpilot>=0.2 \
-            pyyaml>=5.3.0 \
-            importlib_metadata>=4.0.0 \
-            aiofiles>=23.2.1 \
-            packaging>=24.0
+            "wattpilot>=0.2" \
+            "pyyaml>=5.3.0" \
+            "importlib_metadata>=4.0.0" \
+            "aiofiles>=23.2.1" \
+            "packaging>=24.0"
 
       - name: Verify integration imports cleanly
         run: |
