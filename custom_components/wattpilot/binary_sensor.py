@@ -53,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     for entity_cfg in yaml_cfg[platform]:
         try:
+            entity_cfg['source'] = 'property'
             if not 'id' in entity_cfg or entity_cfg['id'] is None:
                 _LOGGER.error("%s - async_setup_entry %s: Invalid yaml configuration - no id: %s", entry.entry_id, platform, entity_cfg)
                 continue
