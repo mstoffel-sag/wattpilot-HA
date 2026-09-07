@@ -1,7 +1,7 @@
 {
   "domain": "wattpilot",
   "name": "Fronius Wattpilot",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "config_flow": true,
   "documentation": "https://github.com/mk-maddin/wattpilot-HA",
   "requirements": [
