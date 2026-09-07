@@ -57,6 +57,69 @@ def _dynamic_load_module(modulename,subfolder='src',initfile='__init__.py'):
     return wattpilot
 
 wattpilot=_dynamic_load_module('wattpilot')
+
+class _FallbackLookup(dict):
+    """dict that reports an unknown key instead of raising KeyError."""
+
+    def __init__(self, label, initial):
+        super().__init__(initial)
+        self._label = label
+
+    def __missing__(self, key):
+        _LOGGER.warning(
+            "%s - wattpilot library has no %s entry for %r - reporting it as "
+            "unknown instead of dropping the websocket connection",
+            DOMAIN, self._label, key,
+        )
+        return "unknown (%s)" % (key,)
+
+
+# Values the library omits entirely, with their documented meaning.
+_WATTPILOT_MISSING_VALUES = {
+    'carValues': {0: 'Unknown', 5: 'Error'},
+}
+
+_WATTPILOT_LOOKUP_TABLES = (
+    'carValues', 'alwValues', 'astValues', 'lmoValues',
+    'ustValues', 'errValues', 'acsValues',
+)
+
+
+def _patch_wattpilot_lookup_tables(module) -> None:
+    """Make the wattpilot library's enum lookups non-fatal.
+
+    The library resolves several properties through plain dicts, e.g.
+    ``self._carConnected = Wattpilot.carValues[value]``. Its ``carValues``
+    table only covers 1-4, so a charger reporting ``car=5`` ("Error") raises
+    ``KeyError: 5`` inside the websocket ``on_message`` callback. That kills
+    the callback, drops the connection, and the 30 second auto-reconnect
+    immediately re-reads the same value from the fullStatus message - an
+    endless crash loop that only ends when the car is physically unplugged
+    (``car`` returns to 1). While it lasts, every entity is unavailable, so
+    Home Assistant can neither report nor recover from the condition.
+
+    The other tables have the same shape of gap (``acsValues`` only covers
+    0-1, ``lmoValues`` only 3-5), so all of them get the same treatment
+    rather than only the one value observed in the wild.
+
+    Upstream is unmaintained - last release 0.2 in May 2022 - and this is
+    upstream issue joscha82/wattpilot#8.
+    """
+    charger_cls = getattr(module, 'Wattpilot', None)
+    if charger_cls is None:
+        _LOGGER.warning("%s - could not patch wattpilot lookup tables: no Wattpilot class", DOMAIN)
+        return
+    for name in _WATTPILOT_LOOKUP_TABLES:
+        table = getattr(charger_cls, name, None)
+        if not isinstance(table, dict) or isinstance(table, _FallbackLookup):
+            continue
+        merged = dict(table)
+        merged.update(_WATTPILOT_MISSING_VALUES.get(name, {}))
+        setattr(charger_cls, name, _FallbackLookup(name, merged))
+    _LOGGER.debug("%s - patched wattpilot lookup tables: %s", DOMAIN, ', '.join(_WATTPILOT_LOOKUP_TABLES))
+
+
+_patch_wattpilot_lookup_tables(wattpilot)
 _LOGGER.debug("%s - utils: imported module from: %s (%s)", DOMAIN, wattpilot.__file__, getattr(wattpilot,'__version__','0.2.2?'))
 
 async def async_ProgrammingDebug(obj, show_all:bool=False) -> None:
