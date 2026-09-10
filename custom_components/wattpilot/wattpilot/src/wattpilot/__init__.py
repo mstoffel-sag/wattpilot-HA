@@ -64,6 +64,24 @@ class LoadMode():
 
 class Wattpilot(object):
 
+    # These four are resolved by NAME from the entity YAML, not from Python:
+    #   select.yaml  "options: lmoValues"  and  "options: ustValues"
+    #   sensor.yaml  "source: attribute, id: AccessState / carConnected"
+    # select.py does getattr(charger, <options value>) to build the option
+    # list, so removing them silently breaks those entities. Keep them.
+    #
+    # Lookups below use .get() with a readable fallback. The original indexed
+    # these tables directly, and they are incomplete - carValues had no entry
+    # for 5 ("Error"), which raised KeyError inside the websocket callback and
+    # killed the connection. 0 and 5 are filled in here.
+    carValues = {0: "Unknown", 1: "no car", 2: "charging", 3: "ready", 4: "complete", 5: "Error"}
+    acsValues = {0: "Open", 1: "Wait"}
+    lmoValues = {3: "Default", 4: "Eco", 5: "Next Trip"}
+    ustValues = {0: "Normal", 1: "AutoUnlock", 2: "AlwaysLock"}
+
+    _AccessState = None
+    _carConnected = None
+
 
 
 
@@ -176,6 +194,16 @@ class Wattpilot(object):
 
 
 
+
+    @property
+    def AccessState(self):
+        """Read by sensor.yaml as: source: attribute, id: AccessState"""
+        return self._AccessState
+
+    @property
+    def carConnected(self):
+        """Read by sensor.yaml as: source: attribute, id: carConnected"""
+        return self._carConnected
 
     @property
     def cak(self):
@@ -318,6 +346,10 @@ class Wattpilot(object):
         self._allProps[name] = value
         if name == "cak":
             self._cak = value
+        elif name == "acs":
+            self._AccessState = self.acsValues.get(value, "unknown (%s)" % (value,))
+        elif name == "car":
+            self._carConnected = self.carValues.get(value, "unknown (%s)" % (value,))
         if self._property_callback is not None:
             self._property_callback(name, value)
 
