@@ -120,6 +120,92 @@ def _patch_wattpilot_lookup_tables(module) -> None:
 
 
 _patch_wattpilot_lookup_tables(wattpilot)
+
+import threading
+import time
+
+# Identifier pushed through the property callback when the websocket goes
+# down, so the integration can re-evaluate entity availability. It is not a
+# real charger property; async_PropertyUpdateHandler special-cases it.
+WATTPILOT_CONNECTION_SENTINEL = '__wattpilot_connection__'
+
+_WATTPILOT_RECONNECT_SECONDS = 30
+
+
+def _patch_wattpilot_reconnect(module) -> None:
+    """Make the library reconnect after the charger disappears.
+
+    wattpilot 0.2 starts the socket with a bare ``run_forever()`` in a daemon
+    thread, and its ``__on_close`` only sets ``_connected = False``. A clean
+    close - which is exactly what powering the charger off produces - makes
+    ``run_forever`` return, the thread exit, and nothing ever restart it. The
+    integration then serves its last known values indefinitely: observed here
+    as entities frozen for 24 hours while still reporting as available.
+
+    ``__on_error`` does attempt a recovery (``close()``, blocking ``sleep(30)``,
+    ``run_forever()``), but only for error closes, and it runs inside the
+    callback thread where it competes with any other reconnect. The
+    ``RECONNECTINTERVALL = 30`` in ``__init__`` is a local variable that is
+    never read.
+
+    Replace ``connect`` with a supervising loop that owns reconnection, and
+    reduce ``__on_error`` to logging so there is exactly one owner. Prefer
+    ``run_forever(reconnect=...)`` (websocket-client >= 1.3.2), which retries
+    internally, and fall back to re-entering the loop ourselves.
+    """
+    charger_cls = getattr(module, 'Wattpilot', None)
+    if charger_cls is None:
+        _LOGGER.warning("%s - could not patch wattpilot reconnect: no Wattpilot class", DOMAIN)
+        return
+    if getattr(charger_cls, '_hass_reconnect_patched', False):
+        return
+
+    def connect(self):
+        def _supervise():
+            while not getattr(self, '_hass_stop', False):
+                try:
+                    try:
+                        self._wsapp.run_forever(reconnect=_WATTPILOT_RECONNECT_SECONDS)
+                    except TypeError:
+                        # websocket-client too old for the reconnect kwarg
+                        self._wsapp.run_forever()
+                except Exception as e:
+                    _LOGGER.warning(
+                        "%s - websocket loop raised %s (%s.%s)",
+                        DOMAIN, str(e), e.__class__.__module__, type(e).__name__)
+                if getattr(self, '_hass_stop', False):
+                    break
+                # run_forever returned, so the connection is down.
+                self._connected = False
+                callback = getattr(self, '_property_callback', None)
+                if callback is not None:
+                    try:
+                        callback(WATTPILOT_CONNECTION_SENTINEL, False)
+                    except Exception as e:
+                        _LOGGER.debug("%s - connection sentinel callback failed: %s", DOMAIN, str(e))
+                _LOGGER.warning(
+                    "%s - charger websocket closed, reconnecting in %s seconds",
+                    DOMAIN, _WATTPILOT_RECONNECT_SECONDS)
+                time.sleep(_WATTPILOT_RECONNECT_SECONDS)
+
+        self._wst = threading.Thread(
+            target=_supervise, name='wattpilot-ws-supervisor', daemon=True)
+        self._wst.start()
+        _LOGGER.info("Wattpilot connected")
+
+    def _on_error(self, wsapp, err):
+        # The original closed the socket, slept 30 s inside the callback
+        # thread and called run_forever() again. The supervisor owns that now.
+        _LOGGER.warning("%s - charger websocket error: %s", DOMAIN, err)
+        self._connected = False
+
+    charger_cls.connect = connect
+    charger_cls._Wattpilot__on_error = _on_error
+    charger_cls._hass_reconnect_patched = True
+    _LOGGER.debug("%s - patched wattpilot reconnect handling", DOMAIN)
+
+
+_patch_wattpilot_reconnect(wattpilot)
 _LOGGER.debug("%s - utils: imported module from: %s (%s)", DOMAIN, wattpilot.__file__, getattr(wattpilot,'__version__','0.2.2?'))
 
 async def async_ProgrammingDebug(obj, show_all:bool=False) -> None:
@@ -175,6 +261,18 @@ async def async_PropertyUpdateHandler(hass: HomeAssistant, entry_id: str, identi
         #_LOGGER.debug("%s - async_PropertyUpdateHandler: get entry_data", entry_id)
         entry_data=hass.data[DOMAIN][entry_id]
        
+        if identifier == WATTPILOT_CONNECTION_SENTINEL:
+            # The websocket dropped. These entities are push-driven, so nothing
+            # would otherwise write state and Home Assistant would keep serving
+            # the last values with available() never re-evaluated. Force a state
+            # write so available() runs and they go unavailable until reconnect.
+            for push_entity in list(entry_data.get(CONF_PUSH_ENTITIES, {}).values()):
+                try:
+                    push_entity.async_write_ha_state()
+                except Exception as e:
+                    _LOGGER.debug("%s - connection refresh skipped an entity: %s", entry_id, str(e))
+            return
+
         entity=entry_data[CONF_PUSH_ENTITIES].get(identifier, None)
         if not entity is None:
             hass.async_create_task(entity.async_local_push(value))
