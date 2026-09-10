@@ -193,14 +193,37 @@ def _patch_wattpilot_reconnect(module) -> None:
         self._wst.start()
         _LOGGER.info("Wattpilot connected")
 
+    def _notify_disconnected(self):
+        """Tell the integration the socket is down so availability refreshes."""
+        self._connected = False
+        callback = getattr(self, '_property_callback', None)
+        if callback is None:
+            return
+        try:
+            callback(WATTPILOT_CONNECTION_SENTINEL, False)
+        except Exception as e:
+            _LOGGER.debug("%s - connection sentinel callback failed: %s", DOMAIN, str(e))
+
     def _on_error(self, wsapp, err):
         # The original closed the socket, slept 30 s inside the callback
-        # thread and called run_forever() again. The supervisor owns that now.
+        # thread and called run_forever() again. Reconnection is owned by
+        # run_forever(reconnect=...) or the supervisor loop now.
         _LOGGER.warning("%s - charger websocket error: %s", DOMAIN, err)
-        self._connected = False
+        _notify_disconnected(self)
+
+    def _on_close(self, wsapp, code, msg):
+        # Fire the sentinel from the close callback rather than the supervisor
+        # loop. When websocket-client supports run_forever(reconnect=...) it
+        # retries internally and never returns, so the supervisor body does not
+        # execute - but on_close still fires on every drop. Without this the
+        # entities keep their last values, and available() is never
+        # re-evaluated, for the whole outage.
+        _LOGGER.warning("%s - charger websocket closed (code=%s)", DOMAIN, code)
+        _notify_disconnected(self)
 
     charger_cls.connect = connect
     charger_cls._Wattpilot__on_error = _on_error
+    charger_cls._Wattpilot__on_close = _on_close
     charger_cls._hass_reconnect_patched = True
     _LOGGER.debug("%s - patched wattpilot reconnect handling", DOMAIN)
 
