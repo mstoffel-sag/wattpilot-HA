@@ -34,6 +34,7 @@ _LOGGER: Final = logging.getLogger(__name__)
 class ChargerPlatformEntity(Entity):
     """Base class for Fronius Wattpilot integration."""
     _state_attr='state'
+    _entity_category = None
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, entity_cfg, charger) -> None:
         """Initialize the object."""
@@ -67,9 +68,11 @@ class ChargerPlatformEntity(Entity):
                 elif self._source == 'property' and GetChargerProp(self._charger, self._identifier, self._default_state) is None:
                     _LOGGER.error("%s - %s: __init__: Charger does not have a property: %s (maybe an attribute?)", self._charger_id, self._identifier, self._identifier)
                     self._init_failed=True
-                elif self._source == 'namespacelist' and GetChargerProp(self._charger, self._identifier, self._default_state)[int(self._namespace_id)] is None:
-                    _LOGGER.error("%s - %s: __init__: Charger does not have a namespacelist item: %s[%s]", self._charger_id, self._identifier, self._identifier, self._namespace_id)
-                    self._init_failed=True
+                elif self._source == 'namespacelist':
+                    _ns_val = GetChargerProp(self._charger, self._identifier, self._default_state)
+                    if not isinstance(_ns_val, list) or _ns_val[int(self._namespace_id)] is None:
+                        _LOGGER.error("%s - %s: __init__: Charger does not have a namespacelist item: %s[%s]", self._charger_id, self._identifier, self._identifier, self._namespace_id)
+                        self._init_failed=True
             if self._init_failed == True: return None
             
             self._attr_name = self._charger_id + ' ' + self._entity_cfg.get('name', self._entity_cfg.get('id'))
@@ -197,9 +200,11 @@ class ChargerPlatformEntity(Entity):
         elif self._source == 'property' and GetChargerProp(self._charger, self._identifier, self._default_state) is None:
             _LOGGER.debug("%s - %s: available: false because unknown property", self._charger_id, self._identifier)            
             return False
-        elif self._source == 'namespacelist' and GetChargerProp(self._charger, self._identifier, self._default_state)[int(self._namespace_id)] is None:
-            _LOGGER.debug("%s - %s: available: false because unknown namespacelist item: %s", self._charger_id, self._identifier, self._namespace_id)            
-            return False
+        elif self._source == 'namespacelist':
+            _ns_val = GetChargerProp(self._charger, self._identifier, self._default_state)
+            if not isinstance(_ns_val, list) or _ns_val[int(self._namespace_id)] is None:
+                _LOGGER.debug("%s - %s: available: false because unknown namespacelist item: %s", self._charger_id, self._identifier, self._namespace_id)
+                return False
         else:
             return True
 

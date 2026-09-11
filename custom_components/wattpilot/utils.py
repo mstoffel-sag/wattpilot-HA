@@ -140,7 +140,7 @@ async def async_GetChargerProp(charger, identifier: str, default=None):
             _LOGGER.error("%s - async_GetChargerProp: Charger does not have allProps attribute: %s", DOMAIN, charger)
             return default
         if identifier is None or not identifier in charger.allProps: 
-            _LOGGER.error("%s - async_GetChargerProp: Charger does not have property: %s", DOMAIN, identifier)
+            _LOGGER.debug("%s - async_GetChargerProp: Charger does not have property: %s", DOMAIN, identifier)
             return default
         await asyncio.sleep(0)
         if charger.allProps[identifier] is None and not default is None:
@@ -158,7 +158,7 @@ def GetChargerProp(charger, identifier:str=None, default:str=None):
             _LOGGER.error("%s - GetChargerProp: Charger does not have allProps attribute: %s", DOMAIN, charger)
             return default
         if identifier is None or not identifier in charger.allProps:
-            _LOGGER.error("%s - GetChargerProp: Charger does not have property: %s", DOMAIN, identifier)
+            _LOGGER.debug("%s - GetChargerProp: Charger does not have property: %s", DOMAIN, identifier)
             return default
         if charger.allProps[identifier] is None and not default is None:
             return default
