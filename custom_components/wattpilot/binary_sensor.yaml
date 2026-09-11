@@ -1,0 +1,10 @@
+# version: 2026.07.26
+# author: David Freina, david@freina.at
+# description: YAML configuration file - holding predefined entities
+#   see: https://github.com/goecharger/go-eCharger-API-v2/blob/main/API_KEYS_FIRMWARE/apikeys-de.md
+
+binary_sensor:
+  - id: alw
+    name: "Allow Charging"
+    description: "Is the car allowed to charge at all now?"
+    icon: "mdi:ev-station"
