@@ -73,7 +73,7 @@ class TestSensorInit:
 class TestSensorStateValidation:
 
     async def test_unknown_state_not_written_to_native_value(self):
-        """When state is STATE_UNKNOWN, _attr_native_value must keep its previous value."""
+        """STATE_UNKNOWN must not reach _attr_native_value of a numeric sensor."""
         s = _sensor({"id": "eto", "source": "property", "name": "Charged",
                      "device_class": "energy", "state_class": "total",
                      "unit_of_measurement": "Wh", "default_state": -1})
@@ -85,22 +85,8 @@ class TestSensorStateValidation:
 
         result = await s._async_update_validate_platform_state(STATE_UNKNOWN)
 
-        # Must return None, not STATE_UNKNOWN.
-        #
-        # The caller is async_local_push in entities.py, not Home Assistant:
-        #
-        #     state = await self._async_update_validate_platform_state(state)
-        #     if not state is None:
-        #         setattr(self, self._state_attr, state)   # _attr_native_value
-        #         self.async_write_ha_state()
-        #
-        # _state_attr is '_attr_native_value' for sensors, so returning
-        # STATE_UNKNOWN puts the string straight back one line after this
-        # method guarded against it, and async_write_ha_state then raises
-        # ValueError for a numeric device class. Returning None makes the
-        # caller skip both the setattr and the write.
+        # None makes async_local_push skip its setattr and async_write_ha_state
         assert result is None
-        # And the string must never reach the stored value.
         assert not isinstance(s._attr_native_value, str)
 
     async def test_valid_numeric_state_updates_native_value(self):
