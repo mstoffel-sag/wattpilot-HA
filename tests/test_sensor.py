@@ -85,10 +85,22 @@ class TestSensorStateValidation:
 
         result = await s._async_update_validate_platform_state(STATE_UNKNOWN)
 
-        # Return value is STATE_UNKNOWN (HA uses this)
-        assert result == STATE_UNKNOWN
-        # But the stored native_value must NOT have been overwritten with the string
-        assert s._attr_native_value == 9999
+        # Must return None, not STATE_UNKNOWN.
+        #
+        # The caller is async_local_push in entities.py, not Home Assistant:
+        #
+        #     state = await self._async_update_validate_platform_state(state)
+        #     if not state is None:
+        #         setattr(self, self._state_attr, state)   # _attr_native_value
+        #         self.async_write_ha_state()
+        #
+        # _state_attr is '_attr_native_value' for sensors, so returning
+        # STATE_UNKNOWN puts the string straight back one line after this
+        # method guarded against it, and async_write_ha_state then raises
+        # ValueError for a numeric device class. Returning None makes the
+        # caller skip both the setattr and the write.
+        assert result is None
+        # And the string must never reach the stored value.
         assert not isinstance(s._attr_native_value, str)
 
     async def test_valid_numeric_state_updates_native_value(self):
