@@ -114,16 +114,13 @@ async def async_PropertyUpdateHandler(hass: HomeAssistant, entry_id: str, identi
         entry_data=hass.data[DOMAIN][entry_id]
        
         if identifier == WATTPILOT_CONNECTION_SENTINEL:
-            # The websocket dropped. These entities are push-driven, so nothing
-            # would otherwise write state, and available() - which already
-            # checks charger.connected - would never be re-evaluated. Force a
-            # write so they go unavailable until the charger returns, instead
-            # of serving the last values as if they were current.
+            # push entities never write state while the socket is down, so
+            # available() would not be re-evaluated without this
             for push_entity in list(entry_data.get(CONF_PUSH_ENTITIES, {}).values()):
                 try:
                     push_entity.async_write_ha_state()
                 except Exception as e:
-                    _LOGGER.debug("%s - connection refresh skipped an entity: %s", entry_id, str(e))
+                    _LOGGER.debug("%s - async_PropertyUpdateHandler: connection refresh skipped an entity: %s", entry_id, str(e))
             return
 
         entity=entry_data[CONF_PUSH_ENTITIES].get(identifier, None)

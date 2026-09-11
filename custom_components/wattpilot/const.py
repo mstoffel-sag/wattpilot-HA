@@ -27,7 +27,5 @@ EVENT_PROPS: Final = ["ftt", "cak"]
 CLOUD_API_URL_PREFIX: Final = 'https://'
 CLOUD_API_URL_POSTFIX: Final = '.api.v3.go-e.io/api/'
 
-# Identifier the bundled wattpilot module pushes through the property callback
-# when the websocket drops. Not a charger property; async_PropertyUpdateHandler
-# special-cases it to re-evaluate entity availability.
+# pushed by the bundled wattpilot module when the websocket drops
 WATTPILOT_CONNECTION_SENTINEL: Final = '__wattpilot_connection__'

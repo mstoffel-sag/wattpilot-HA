@@ -17,11 +17,9 @@ CONST_HASH_PBKDF2 = 'pbkdf2'
 CONST_HASH_BCRYPT = 'bcrypt'
 CONST_WPFLEX_DEVICETYPE='wattpilot_flex'
 
-# Seconds between reconnect attempts after the charger disappears.
 RECONNECT_SECONDS = 30
 
-# Pushed through the property callback when the socket drops, so the
-# integration can re-evaluate entity availability. Not a charger property.
+# pushed through the property callback when the socket drops
 CONNECTION_SENTINEL = '__wattpilot_connection__'
 __version__ = '0.2.2c'
 
@@ -293,19 +291,7 @@ class Wattpilot(object):
 
         return ret
     def connect(self):
-        """Start the websocket and keep it up.
-
-        Previously this ran a bare run_forever() in a daemon thread. A clean
-        close - which is what switching the charger off produces - makes
-        run_forever return, the thread exit, and nothing restart it. The
-        integration then serves its last known values indefinitely; measured
-        once at 24 h of frozen data after a power-off, recoverable only by
-        calling wattpilot.reconnect_charger by hand.
-
-        run_forever(reconnect=...) (websocket-client >= 1.3.2) retries
-        internally. The surrounding loop covers older versions, where it
-        simply returns on close.
-        """
+        """Start the websocket and reconnect whenever it drops."""
         self._stop = False
 
         def _supervise():
@@ -314,14 +300,14 @@ class Wattpilot(object):
                     try:
                         self._wsapp.run_forever(reconnect=RECONNECT_SECONDS)
                     except TypeError:
-                        # websocket-client too old for the reconnect kwarg
+                        # websocket-client < 1.3.2 has no reconnect kwarg
                         self._wsapp.run_forever()
                 except Exception as e:
-                    _LOGGER.warning("Websocket loop raised %s (%s)", str(e), type(e).__name__)
+                    _LOGGER.warning("connect: websocket loop raised %s (%s)", str(e), type(e).__name__)
                 if self._stop:
                     break
                 self._set_disconnected()
-                _LOGGER.warning("Charger websocket closed, reconnecting in %s seconds", RECONNECT_SECONDS)
+                _LOGGER.warning("connect: websocket closed, reconnecting in %s seconds", RECONNECT_SECONDS)
                 sleep(RECONNECT_SECONDS)
 
         self._wst = threading.Thread(target=_supervise, name='wattpilot-ws-supervisor', daemon=True)
@@ -329,34 +315,23 @@ class Wattpilot(object):
         _LOGGER.info("Wattpilot connected")
 
     def disconnect(self):
-        """Close the socket and stop reconnecting.
-
-        utils.py and services.py currently reach into charger._wsapp directly,
-        marked "workaround until wattpilot python package > 0.2 with built in
-        disconnect is released". Both already prefer this method when present.
-        """
+        """Close the socket and stop reconnecting."""
         self._stop = True
         try:
             self._wsapp.close()
         except Exception as e:
-            _LOGGER.debug("Closing websocket failed: %s", str(e))
+            _LOGGER.debug("disconnect: closing websocket failed: %s", str(e))
         self._set_disconnected()
-        _LOGGER.info("Wattpilot disconnected")
+        _LOGGER.info("disconnect: Wattpilot disconnected")
 
     def _set_disconnected(self):
-        """Mark the socket down and tell the listener.
-
-        Entities in the integration are push-driven, so without a notification
-        nothing writes state while the socket is dead and available() - which
-        does check connected - is never re-evaluated. They keep showing stale
-        values as if current.
-        """
+        """Mark the socket down and notify the property listener."""
         self._connected = False
         if self._property_callback is not None:
             try:
                 self._property_callback(CONNECTION_SENTINEL, False)
             except Exception as e:
-                _LOGGER.debug("Connection sentinel callback failed: %s", str(e))
+                _LOGGER.debug("_set_disconnected: sentinel callback failed: %s", str(e))
 
     def register_message_callback(self,callback_fn):
         """signature of callback_fn: (wsapp,msg)"""
@@ -636,17 +611,13 @@ class Wattpilot(object):
             _LOGGER.error("Error Sending Request %s. Message: %s" ,message.requestId,message.message)
 
     def __on_error(self,wsapp,err):
-        # Previously close(), a blocking sleep(30) and run_forever() from
-        # inside the callback thread, racing whoever else was reconnecting.
-        # connect() owns reconnection now.
-        _LOGGER.warning("Charger websocket error: %s", err)
+        # reconnection is owned by connect()
+        _LOGGER.warning("__on_error: charger websocket error: %s", err)
         self._set_disconnected()
 
     def __on_close(self,wsapp,code,msg):
-        # Notify from here rather than from the supervising loop: where the
-        # reconnect kwarg is supported run_forever never returns, so the loop
-        # body does not run, but on_close still fires on every drop.
-        _LOGGER.warning("Charger websocket closed (code=%s)", code)
+        # notify here, not in connect(): run_forever(reconnect=...) never returns
+        _LOGGER.warning("__on_close: charger websocket closed (code=%s)", code)
         self._set_disconnected()
 
     def __on_message(self, wsapp, message):
