@@ -31,7 +31,7 @@ Not me neither any of contributors to this or any prerequired/dependency project
 
 Allows for control of [Fronius Wattpilot](https://www.fronius.com/en/solar-energy/installers-partners/products-solutions/residential-energy-solutions/e-mobility-and-photovoltaic-residential/wattpilot-ev-charging-solution-for-homes) wallbox/electro vehicle charging devices via home assistant with the following features:
 
-* works with wattpilot, wattpilot V2 & wattpilot flex
+* works with wattpilot, wattpilot V2 & wattpilot flex (fw > 42.8)
 * connect charger via local LAN or via Cloud
 * charging mode change
 * start / stop charging
