@@ -25,6 +25,21 @@ class LoadMode():
     NEXTTRIP=5
 
 
+def _translate(table, value):
+    """Look a raw charger value up in a translation table.
+
+    These tables are hand-maintained and the firmware keeps adding values, so
+    a miss must not be fatal: __update_property runs inside the websocket
+    on_message callback, and an exception there tears down the connection for
+    a property the caller may not even read. Report the raw value instead.
+    """
+    try:
+        return table[value]
+    except KeyError:
+        _LOGGER.warning("No translation for value %r in %s - reporting it as unknown", value, table)
+        return "unknown (%s)" % (value,)
+
+
 class Wattpilot(object):
 
     carValues = {}
@@ -43,10 +58,18 @@ class Wattpilot(object):
     astValues[1] = "locked"
     astValues[2] = "auto"
 
+    # 0 and 5 are reported by real chargers: 5 is the car's error state, seen
+    # whenever the control-pilot handshake fails. Without them the lookups in
+    # __update_property raised KeyError inside the websocket on_message
+    # callback, which killed the connection; the 30 s reconnect then re-read
+    # the same value from fullStatus and crashed again, until the car was
+    # physically unplugged (car returns to 1).
+    carValues[0] = "Unknown"
     carValues[1] = "no car"
     carValues[2] = "charging"
     carValues[3] = "ready"
     carValues[4] = "complete"
+    carValues[5] = "Error"
 
     alwValues[0] = False
     alwValues[1] = True
@@ -332,7 +355,7 @@ class Wattpilot(object):
 
         self._allProps[name] = value
         if name=="acs":
-            self._AccessState = Wattpilot.acsValues[value]
+            self._AccessState = _translate(Wattpilot.acsValues, value)
 
         if name=="cbl":
             self._cableType = value
@@ -347,10 +370,10 @@ class Wattpilot(object):
             self._energyCounterSinceStart = value
 
         if name=="err":
-            self._errorState = Wattpilot.errValues[value]
+            self._errorState = _translate(Wattpilot.errValues, value)
 
         if name=="ust":
-            self._cableLock = Wattpilot.ustValues[value]
+            self._cableLock = _translate(Wattpilot.ustValues, value)
 
         if name=="eto":
             self._energyCounterTotal = value
@@ -360,11 +383,11 @@ class Wattpilot(object):
         if name=="cak":
             self._cak = value
         if name=="lmo":
-            self._mode = Wattpilot.lmoValues[value]
+            self._mode = _translate(Wattpilot.lmoValues, value)
         if name=="car":
-            self._carConnected = Wattpilot.carValues[value]
+            self._carConnected = _translate(Wattpilot.carValues, value)
         if name=="alw":
-            self._AllowCharging = Wattpilot.alwValues[value]
+            self._AllowCharging = _translate(Wattpilot.alwValues, value)
         if name=="nrg":
             self._voltage1=value[0]
             self._voltage2=value[1]
@@ -383,7 +406,7 @@ class Wattpilot(object):
         if name=="version":
             self._version = value
         if name=="ast":
-            self._AllowCharging = self._astValues[value]
+            self._AllowCharging = _translate(self._astValues, value)
         if name=="fwv":
             self._firmware = value
         if name=="wss":
