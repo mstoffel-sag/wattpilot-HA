@@ -26,17 +26,11 @@ class LoadMode():
 
 
 def _translate(table, value):
-    """Look a raw charger value up in a translation table.
-
-    These tables are hand-maintained and the firmware keeps adding values, so
-    a miss must not be fatal: __update_property runs inside the websocket
-    on_message callback, and an exception there tears down the connection for
-    a property the caller may not even read. Report the raw value instead.
-    """
+    """Translate a raw charger value, without raising out of the ws callback."""
     try:
         return table[value]
     except KeyError:
-        _LOGGER.warning("No translation for value %r in %s - reporting it as unknown", value, table)
+        _LOGGER.warning("_translate: no entry for value %r in %s - reporting as unknown", value, table)
         return "unknown (%s)" % (value,)
 
 
@@ -58,12 +52,6 @@ class Wattpilot(object):
     astValues[1] = "locked"
     astValues[2] = "auto"
 
-    # 0 and 5 are reported by real chargers: 5 is the car's error state, seen
-    # whenever the control-pilot handshake fails. Without them the lookups in
-    # __update_property raised KeyError inside the websocket on_message
-    # callback, which killed the connection; the 30 s reconnect then re-read
-    # the same value from fullStatus and crashed again, until the car was
-    # physically unplugged (car returns to 1).
     carValues[0] = "Unknown"
     carValues[1] = "no car"
     carValues[2] = "charging"
