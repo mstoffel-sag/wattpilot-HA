@@ -81,6 +81,7 @@ class Wattpilot(object):
 
     _AccessState = None
     _carConnected = None
+    _firmware = None
 
 
 
@@ -194,6 +195,11 @@ class Wattpilot(object):
 
 
 
+
+    @property
+    def firmware(self):
+        """Read by entities.py for the firmware: constraint and sw_version."""
+        return self._firmware
 
     @property
     def AccessState(self):
@@ -350,6 +356,8 @@ class Wattpilot(object):
             self._AccessState = self.acsValues.get(value, "unknown (%s)" % (value,))
         elif name == "car":
             self._carConnected = self.carValues.get(value, "unknown (%s)" % (value,))
+        elif name == "fwv":
+            self._firmware = value
         if self._property_callback is not None:
             self._property_callback(name, value)
 
