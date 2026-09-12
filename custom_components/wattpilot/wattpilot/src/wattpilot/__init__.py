@@ -550,7 +550,10 @@ class Wattpilot(object):
             _LOGGER.error("Authentication failed: %s" , message.message)
 
     def __on_DeltaStatus(self,message):
-        self._allPropsInitialized=True # Assume all properties have been initialized when first delta status is received
+        # only when the charger never reports 'partial'; otherwise a delta
+        # arriving mid-fullStatus would mark init complete too early
+        if self.__allPropsInitializedFallback:
+            self._allPropsInitialized=True
         props = message.status.__dict__
         for key in props:
             self.__update_property(key,props[key])
@@ -628,6 +631,7 @@ class Wattpilot(object):
         self._connected = False
         self._allProps={}
         self._allPropsInitialized=False
+        self.__allPropsInitializedFallback=False
         self._voltage1=None
         self._voltage2=None
         self._voltage3=None
