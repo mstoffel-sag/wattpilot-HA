@@ -30,6 +30,7 @@ from .const import (
     DOMAIN,
     EVENT_PROPS_ID,
     EVENT_PROPS,
+    WATTPILOT_CONNECTION_SENTINEL,
 )
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ async def async_PropertyUpdateHandler(hass: HomeAssistant, entry_id: str, identi
         #_LOGGER.debug("%s - async_PropertyUpdateHandler: get entry_data", entry_id)
         entry_data=hass.data[DOMAIN][entry_id]
        
-        if identifier == getattr(wattpilot, 'CONNECTION_SENTINEL', '__wattpilot_connection__'):
+        if identifier == WATTPILOT_CONNECTION_SENTINEL:
             # The websocket dropped. These entities are push-driven, so nothing
             # would otherwise write state and Home Assistant would keep serving
             # the last values with available() never re-evaluated. Force a state
