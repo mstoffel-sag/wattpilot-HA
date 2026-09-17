@@ -52,7 +52,7 @@ RECONNECT_SECONDS = 30
 
 # Pushed through the property callback when the socket drops, so the
 # integration can re-evaluate entity availability. Not a charger property.
-CONNECTION_SENTINEL = '__wattpilot_connection__'
+CONST_CONNECTION_SENTINEL = '__wattpilot_connection__'
 __version__ = '0.2.2c-ha1'  # pruned in-tree client, see module docstring
 
 class LoadMode():
@@ -295,7 +295,7 @@ class Wattpilot(object):
         self._connected = False
         if self._property_callback is not None:
             try:
-                self._property_callback(CONNECTION_SENTINEL, False)
+                self._property_callback(CONST_CONNECTION_SENTINEL, False)
             except Exception as e:
                 _LOGGER.debug("Connection sentinel callback failed: %s", str(e))
 
