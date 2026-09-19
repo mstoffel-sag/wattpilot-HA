@@ -57,7 +57,6 @@ def _dynamic_load_module(modulename,subfolder='src',initfile='__init__.py'):
     return wattpilot
 
 wattpilot=_dynamic_load_module('wattpilot')
-
 _LOGGER.debug("%s - utils: imported module from: %s (%s)", DOMAIN, wattpilot.__file__, getattr(wattpilot,'__version__','0.2.2?'))
 
 async def async_ProgrammingDebug(obj, show_all:bool=False) -> None:
@@ -114,15 +113,13 @@ async def async_PropertyUpdateHandler(hass: HomeAssistant, entry_id: str, identi
         entry_data=hass.data[DOMAIN][entry_id]
        
         if identifier == wattpilot.CONST_CONNECTION_SENTINEL:
-            # The websocket dropped. These entities are push-driven, so nothing
-            # would otherwise write state and Home Assistant would keep serving
-            # the last values with available() never re-evaluated. Force a state
-            # write so available() runs and they go unavailable until reconnect.
+            # push entities never write state while the socket is down, so
+            # available() would not be re-evaluated without this
             for push_entity in list(entry_data.get(CONF_PUSH_ENTITIES, {}).values()):
                 try:
                     push_entity.async_write_ha_state()
                 except Exception as e:
-                    _LOGGER.debug("%s - connection refresh skipped an entity: %s", entry_id, str(e))
+                    _LOGGER.debug("%s - async_PropertyUpdateHandler: connection refresh skipped an entity: %s", entry_id, str(e))
             return
 
         entity=entry_data[CONF_PUSH_ENTITIES].get(identifier, None)
