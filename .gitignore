@@ -3,6 +3,7 @@ dev/
 #packages/
 HomeAssistant_ManualInstall.sh
 .DS_Store
+check_wattpilot.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
