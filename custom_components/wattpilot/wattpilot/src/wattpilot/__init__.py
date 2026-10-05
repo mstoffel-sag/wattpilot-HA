@@ -1,33 +1,3 @@
-"""In-tree Wattpilot client for the Home Assistant integration.
-
-Originally vendored from joscha82/wattpilot and already carrying local changes
-(bcrypt auth for Wattpilot Flex, which upstream does not have). Upstream has
-had no release since 0.2 in May 2022, so this copy - not PyPI - is what the
-integration loads, and it is maintained here.
-
-Pruned to what the integration actually uses. It reads properties out of
-allProps and maps them itself in sensor.yaml / select.yaml, so it needs only:
-
-    Wattpilot(ip, password, serial, cloud)
-    connect() disconnect() send_update()
-    register_property_callback() unregister_property_callback()
-    .name .serial .connected .allProps .allPropsInitialized .cak
-
-Removed: 28 typed accessors (voltage1, amps2, mode, carConnected, ...) that
-nothing read, the seven class-level enum lookup tables that fed them, and the
-CLI shell. Those tables were not merely dead weight - they were incomplete and
-raised out of the websocket callback, killing the connection for values the
-integration never consumed. carValues covered 1-4, so car=5 ("Error") raised
-KeyError: 5; errValues covered 0-5, so err=14 ("NoComm") raised KeyError: 14.
-
-Added: a reconnect supervisor and a real disconnect(). The old connect() ran a
-bare run_forever(), so a clean close ended the thread permanently and the
-integration served stale values indefinitely.
-
-All authentication and protocol code is byte-identical to the version this was
-pruned from.
-"""
-
 import websocket
 import json
 import hashlib
@@ -47,13 +17,11 @@ CONST_HASH_PBKDF2 = 'pbkdf2'
 CONST_HASH_BCRYPT = 'bcrypt'
 CONST_WPFLEX_DEVICETYPE='wattpilot_flex'
 
-# Seconds between reconnect attempts after the charger disappears.
 RECONNECT_SECONDS = 30
 
-# Pushed through the property callback when the socket drops, so the
-# integration can re-evaluate entity availability. Not a charger property.
+# pushed through the property callback when the socket drops
 CONST_CONNECTION_SENTINEL = '__wattpilot_connection__'
-__version__ = '0.2.2c-ha1'  # pruned in-tree client, see module docstring
+__version__ = '0.2.2e'
 
 class LoadMode():
     """Wrapper Class to represent the Load Mode of the Wattpilot"""
@@ -62,34 +30,56 @@ class LoadMode():
     NEXTTRIP=5
 
 
+def _translate(table, value):
+    """Translate a raw charger value, without raising out of the ws callback."""
+    try:
+        return table[value]
+    except KeyError:
+        _LOGGER.warning("_translate: no entry for value %r in %s - reporting as unknown", value, table)
+        return "unknown (%s)" % (value,)
+
+
 class Wattpilot(object):
 
-    # These four are resolved by NAME from the entity YAML, not from Python:
-    #   select.yaml  "options: lmoValues"  and  "options: ustValues"
-    #   sensor.yaml  "source: attribute, id: AccessState / carConnected"
-    # select.py does getattr(charger, <options value>) to build the option
-    # list, so removing them silently breaks those entities. Keep them.
-    #
-    # Lookups below use .get() with a readable fallback. The original indexed
-    # these tables directly, and they are incomplete - carValues had no entry
-    # for 5 ("Error"), which raised KeyError inside the websocket callback and
-    # killed the connection. 0 and 5 are filled in here.
-    carValues = {0: "Unknown", 1: "no car", 2: "charging", 3: "ready", 4: "complete", 5: "Error"}
-    acsValues = {0: "Open", 1: "Wait"}
-    lmoValues = {3: "Default", 4: "Eco", 5: "Next Trip"}
-    ustValues = {0: "Normal", 1: "AutoUnlock", 2: "AlwaysLock"}
+    carValues = {}
+    alwValues = {}
+    astValues = {}
+    lmoValues = {}
+    ustValues = {}
+    errValues = {}
+    acsValues = {}
 
-    _AccessState = None
-    _carConnected = None
-    _firmware = None
+    lmoValues[3] = "Default"
+    lmoValues[4] = "Eco"
+    lmoValues[5] = "Next Trip"
 
+    astValues[0] = "open"
+    astValues[1] = "locked"
+    astValues[2] = "auto"
 
+    carValues[0] = "Unknown"
+    carValues[1] = "no car"
+    carValues[2] = "charging"
+    carValues[3] = "ready"
+    carValues[4] = "complete"
+    carValues[5] = "Error"
 
+    alwValues[0] = False
+    alwValues[1] = True
 
+    ustValues[0] = "Normal"
+    ustValues[1] = "AutoUnlock"
+    ustValues[2] = "AlwaysLock"
 
+    errValues[0] = "Unknown Error"
+    errValues[1] = "Idle"
+    errValues[2] = "Charging"
+    errValues[3] = "Wait Car"
+    errValues[4] = "Complete"
+    errValues[5] = "Error"
 
-
-
+    acsValues[0] = "Open"
+    acsValues[1] = "Wait"
 
     _authhashtype = CONST_HASH_PBKDF2
     _hashedpassword = b''
@@ -104,12 +94,38 @@ class Wattpilot(object):
         """Returns true, if all properties have been initialized"""
         return self._allPropsInitialized
 
+    @property
+    def cableType(self):
+        """Returns the Cable Type (Ampere) of the connected cable"""
+        return self._cableType
 
+    @property
+    def frequency(self):
+        """Returns the power frequency"""
+        return self._frequency
 
+    @property
+    def phases(self):
+        """returns the phases"""
+        return self._phases
     
+    @property
+    def energyCounterSinceStart(self):
+        """Returns used kwh since start of charging"""
+        return self._energyCounterSinceStart
     
+    @property
+    def errorState(self):
+        """Returns error State"""
+        return self._errorState
 
+    @property
+    def cableLock(self):
+        return self._cableLock
     
+    @property
+    def energyCounterTotal(self):
+        return self._energyCounterTotal
 
     @property
     def serial(self):
@@ -175,41 +191,92 @@ class Wattpilot(object):
     def connected(self):
         return self._connected
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    @property
+    def voltage1(self):
+        return self._voltage1
 
     @property
-    def firmware(self):
-        """Read by entities.py for the firmware: constraint and sw_version."""
-        return self._firmware
+    def voltage2(self):
+        return self._voltage2
+
+    @property
+    def voltage3(self):
+        return self._voltage3
+
+    @property
+    def voltageN(self):
+        return self._voltageN
+
+    @property
+    def amps1(self):
+        return self._amps1
+
+    @property
+    def amps2(self):
+        return self._amps2
+
+    @property
+    def amps3(self):
+        return self._amps3
+
+    @property
+    def power1(self):
+        return self._power1
+
+    @property
+    def power2(self):
+        return self._power2
+
+    @property
+    def power3(self):
+        return self._power3
+
+    @property
+    def powerN(self):
+        return self._powerN
+
+    @property
+    def power(self):
+        return self._power
+
+    @property
+    def version(self):
+        return self._version
+
+    @property
+    def amp(self):
+        return self._amp
 
     @property
     def AccessState(self):
-        """Read by sensor.yaml as: source: attribute, id: AccessState"""
         return self._AccessState
 
     @property
+    def firmware(self):
+        """Returns the Firmwareversion of Wattpilot Device (read only)"""
+        return self._firmware
+
+    @property
+    def WifiSSID(self):
+        """Returns the SSID of the Wifi network currently connected (read only)"""
+        return self._WifiSSID
+
+    @property
+    def AllowCharging(self):
+        return self._AllowCharging
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @property
     def carConnected(self):
-        """Read by sensor.yaml as: source: attribute, id: carConnected"""
         return self._carConnected
+
+    @property
+    def cae(self):
+        """Returns true if Cloud API Access is enabled (read only)"""
+        return self._cae
 
     @property
     def cak(self):
@@ -235,18 +302,7 @@ class Wattpilot(object):
 
         return ret
     def connect(self):
-        """Start the websocket and keep it up.
-
-        The original ran a bare run_forever() in a daemon thread. A clean close
-        - which is what switching the charger off produces - made run_forever
-        return, the thread exit, and nothing ever restart it: the integration
-        then served its last known values indefinitely. Measured once at 24 h
-        of frozen data after a power-off.
-
-        run_forever(reconnect=...) (websocket-client >= 1.3.2) retries
-        internally; the surrounding loop covers older versions where it simply
-        returns on close.
-        """
+        """Start the websocket and reconnect whenever it drops."""
         self._stop = False
 
         def _supervise():
@@ -255,49 +311,38 @@ class Wattpilot(object):
                     try:
                         self._wsapp.run_forever(reconnect=RECONNECT_SECONDS)
                     except TypeError:
-                        # websocket-client too old for the reconnect kwarg
+                        # websocket-client < 1.3.2 has no reconnect kwarg
                         self._wsapp.run_forever()
                 except Exception as e:
-                    _LOGGER.warning("Websocket loop raised %s (%s)", str(e), type(e).__name__)
+                    _LOGGER.warning("connect: websocket loop raised %s (%s)", str(e), type(e).__name__)
                 if self._stop:
                     break
                 self._set_disconnected()
-                _LOGGER.warning("Charger websocket closed, reconnecting in %s seconds", RECONNECT_SECONDS)
+                _LOGGER.warning("connect: websocket closed, reconnecting in %s seconds", RECONNECT_SECONDS)
                 sleep(RECONNECT_SECONDS)
 
         self._wst = threading.Thread(target=_supervise, name='wattpilot-ws-supervisor', daemon=True)
         self._wst.start()
-        _LOGGER.info("Wattpilot connected")
+        _LOGGER.info("connect: Wattpilot connected")
 
     def disconnect(self):
-        """Close the socket and stop reconnecting.
-
-        The integration previously had to reach into _wsapp directly because
-        this did not exist ("workaround until wattpilot python package > 0.2
-        with built in disconnect is released").
-        """
+        """Close the socket and stop reconnecting."""
         self._stop = True
         try:
             self._wsapp.close()
         except Exception as e:
-            _LOGGER.debug("Closing websocket failed: %s", str(e))
+            _LOGGER.debug("disconnect: closing websocket failed: %s", str(e))
         self._set_disconnected()
-        _LOGGER.info("Wattpilot disconnected")
+        _LOGGER.info("disconnect: Wattpilot disconnected")
 
     def _set_disconnected(self):
-        """Mark the socket down and tell the listener.
-
-        Entities in the integration are push-driven, so without this nothing
-        writes state while the socket is dead and available() - which does
-        check connected - is never re-evaluated. They would keep showing stale
-        values as if current.
-        """
+        """Mark the socket down and notify the property listener."""
         self._connected = False
         if self._property_callback is not None:
             try:
                 self._property_callback(CONST_CONNECTION_SENTINEL, False)
             except Exception as e:
-                _LOGGER.debug("Connection sentinel callback failed: %s", str(e))
+                _LOGGER.debug("_set_disconnected: sentinel callback failed: %s", str(e))
 
     def register_message_callback(self,callback_fn):
         """signature of callback_fn: (wsapp,msg)"""
@@ -335,32 +380,73 @@ class Wattpilot(object):
         else:
             self.__send(message)
 
-    def __update_property(self, name, value):
-        """Store a property and notify the listener.
+    def __update_property(self,name,value):
 
-        Everything the integration reads comes out of allProps, and it maps
-        raw values itself (see sensor.yaml / select.yaml). The library used to
-        also translate a dozen properties into typed attributes via class-level
-        lookup tables. Nothing consumed those attributes, and the tables were
-        incomplete - carValues covered 1-4 so car=5 ("Error") raised
-        KeyError: 5, and errValues covered 0-5 so err=14 ("NoComm") raised
-        KeyError: 14. Both escaped into the websocket on_message callback and
-        killed the connection, for values that were never read. They are gone.
-
-        cak is kept because the integration reads charger.cak for cloud setup.
-        """
         self._allProps[name] = value
-        if name == "cak":
-            self._cak = value
-        elif name == "acs":
-            self._AccessState = self.acsValues.get(value, "unknown (%s)" % (value,))
-        elif name == "car":
-            self._carConnected = self.carValues.get(value, "unknown (%s)" % (value,))
-        elif name == "fwv":
-            self._firmware = value
-        if self._property_callback is not None:
-            self._property_callback(name, value)
+        if name=="acs":
+            self._AccessState = _translate(Wattpilot.acsValues, value)
 
+        if name=="cbl":
+            self._cableType = value
+
+        if name=="fhz":
+            self._frequency = value
+
+        if name=="pha":
+            self._phases = value
+        
+        if name=="wh":
+            self._energyCounterSinceStart = value
+
+        if name=="err":
+            self._errorState = _translate(Wattpilot.errValues, value)
+
+        if name=="ust":
+            self._cableLock = _translate(Wattpilot.ustValues, value)
+
+        if name=="eto":
+            self._energyCounterTotal = value
+
+        if name=="cae":
+            self._cae = value
+        if name=="cak":
+            self._cak = value
+        if name=="lmo":
+            self._mode = _translate(Wattpilot.lmoValues, value)
+        if name=="car":
+            self._carConnected = _translate(Wattpilot.carValues, value)
+        if name=="alw":
+            self._AllowCharging = _translate(Wattpilot.alwValues, value)
+        if name=="nrg":
+            self._voltage1=value[0]
+            self._voltage2=value[1]
+            self._voltage3=value[2]
+            self._voltageN=value[3]
+            self._amps1=value[4]
+            self._amps2=value[5]
+            self._amps3=value[6]
+            self._power1=value[7]*0.001
+            self._power2=value[8]*0.001
+            self._power3=value[9]*0.001
+            self._powerN=value[10]*0.001
+            self._power=value[11]*0.001
+        if name=="amp":
+            self._amp = value
+        if name=="version":
+            self._version = value
+        if name=="ast":
+            self._AllowCharging = _translate(Wattpilot.astValues, value)
+        if name=="fwv":
+            self._firmware = value
+        if name=="wss":
+            self._WifiSSID=value
+        if name=="upd":
+            if value=="0":
+                self._updateAvailable = False
+            else:
+                self._updateAvailable = True
+        if self._property_callback != None:
+            self._property_callback(name,value)
 
     def __on_hello(self,message):
         _LOGGER.info("Connected to WattPilot Serial %s",message.serial)
@@ -516,10 +602,7 @@ class Wattpilot(object):
             _LOGGER.error("Authentication failed: %s" , message.message)
 
     def __on_DeltaStatus(self,message):
-        # only when the charger never reports 'partial'; otherwise a delta
-        # arriving mid-fullStatus would mark init complete too early
-        if self.__allPropsInitializedFallback:
-            self._allPropsInitialized=True
+        self._allPropsInitialized=True # Assume all properties have been initialized when first delta status is received
         props = message.status.__dict__
         for key in props:
             self.__update_property(key,props[key])
@@ -532,11 +615,6 @@ class Wattpilot(object):
 
     def __on_response(self,message):
         if message.success:
-            # Not every successful response carries a status object - the
-            # reboot command's ack does not, since the charger is about to
-            # restart rather than report new property values. Reading
-            # message.status unconditionally raised AttributeError there,
-            # which escaped __on_message uncaught and killed the connection.
             if hasattr(message,'status'):
                 props = message.status.__dict__
                 for key in props:
@@ -545,17 +623,13 @@ class Wattpilot(object):
             _LOGGER.error("Error Sending Request %s. Message: %s" ,message.requestId,message.message)
 
     def __on_error(self,wsapp,err):
-        # Previously: close(), blocking sleep(30), run_forever() - from inside
-        # the callback thread, racing whoever else was reconnecting. connect()
-        # owns reconnection now.
-        _LOGGER.warning("Charger websocket error: %s", err)
+        # reconnection is owned by connect()
+        _LOGGER.warning("__on_error: charger websocket error: %s", err)
         self._set_disconnected()
 
     def __on_close(self,wsapp,code,msg):
-        # Must notify from here, not from the supervising loop: when the
-        # reconnect kwarg is supported run_forever never returns, so the loop
-        # body does not run - but on_close still fires on every drop.
-        _LOGGER.warning("Charger websocket closed (code=%s)", code)
+        # notify here, not in connect(): run_forever(reconnect=...) never returns
+        _LOGGER.warning("__on_close: charger websocket closed (code=%s)", code)
         self._set_disconnected()
 
     def __on_message(self, wsapp, message):
@@ -608,7 +682,27 @@ class Wattpilot(object):
         self._connected = False
         self._allProps={}
         self._allPropsInitialized=False
-        self.__allPropsInitializedFallback=False
+        self._voltage1=None
+        self._voltage2=None
+        self._voltage3=None
+        self._voltageN=None
+        self._amps1=None
+        self._amps2=None
+        self._amps3=None
+        self._power1=None
+        self._power2=None
+        self._power3=None
+        self._powerN=None
+        self._power=None
+        self._version = None
+        self._amp = None
+        self._AccessState = None
+        self._firmware = None
+        self._WifiSSID = None
+        self._AllowCharging = None
+        self._mode=None
+        self._carConnected=None
+        self._cae=None
         self._cak=None
         self._message_callback=None
         self._property_callback=None

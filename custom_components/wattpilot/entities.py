@@ -146,7 +146,6 @@ class ChargerPlatformEntity(Entity):
         _LOGGER.debug("%s - %s: _check_variant_supported complete (%s=%s -> %s)", self._charger_id, self._identifier, variant, v_tst, v)
         return v
 
-
     def _check_hw_typ_supported(self):
         """Return if the charger hardware type supports this entity."""
         hw_typ_tst = self._entity_cfg.get("hw_typ", None)
