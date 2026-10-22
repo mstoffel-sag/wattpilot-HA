@@ -6,6 +6,7 @@ import threading
 import hmac
 import logging
 import base64
+import re
 import bcrypt
 
 from time import sleep
@@ -21,7 +22,13 @@ RECONNECT_SECONDS = 30
 
 # pushed through the property callback when the socket drops
 CONST_CONNECTION_SENTINEL = '__wattpilot_connection__'
-__version__ = '0.2.2e'
+CONST_SECRET_PROPERTIES = ('cak', 'ocppck', 'ocppcc', 'ocppsc')
+CONST_SECRET_PATTERN = re.compile(r'("(?:' + '|'.join(CONST_SECRET_PROPERTIES) + r')"\s*:\s*)"(?:[^"\\]|\\.)*"')
+__version__ = '0.2.2h'
+
+def _mask_secrets(message):
+    """Return the message with the values of secret properties replaced by ***."""
+    return CONST_SECRET_PATTERN.sub(r'\1"***"', str(message))
 
 class LoadMode():
     """Wrapper Class to represent the Load Mode of the Wattpilot"""
@@ -620,12 +627,16 @@ class Wattpilot(object):
                 for key in props:
                     self.__update_property(key,props[key])
         else:
-            _LOGGER.error("Error Sending Request %s. Message: %s" ,message.requestId,message.message)
+            _LOGGER.error("Error Sending Request %s. Message: %s" ,getattr(message,'requestId',None),getattr(message,'message',message))
 
     def __on_error(self,wsapp,err):
         # reconnection is owned by connect()
         _LOGGER.warning("__on_error: charger websocket error: %s", err)
         self._set_disconnected()
+
+    def __on_open(self,wsapp):
+        if self._stop:
+            wsapp.close()
 
     def __on_close(self,wsapp,code,msg):
         # notify here, not in connect(): run_forever(reconnect=...) never returns
@@ -634,28 +645,32 @@ class Wattpilot(object):
 
     def __on_message(self, wsapp, message):
         ## called whenever a message through websocket is received
-        _LOGGER.debug("Message received: %s", message)
-        msg=json.loads(message, object_hook=lambda d: SimpleNamespace(**d))
-        if (msg.type == 'hello'):  # Hello Message -> Received upon connection before auth
-            self.__on_hello(msg)
-        if (msg.type == 'authRequired'): # Auth Required -> Received after hello 
-            self.__on_auth(wsapp,msg)
-        if (msg.type == 'response'): # Response Message -> Received after sending a update and contains result of update
-            self.__on_response(msg)
-        if (msg.type == 'authSuccess'): #Auth Success -> Received after sending  correct authentication message
-            self.__on_AuthSuccess(msg)
-        if (msg.type == 'authError'): # AUth errot -> Received after sending incorrect authentication message (e.g. wrong password)
-            self.__on_AuthError(msg)
-        if (msg.type == 'fullStatus'): #Full Status -> Received after successfull connection. Contains all Properties of Wattpilot
-            self.__on_FullStatus(msg)
-        if (msg.type == 'deltaStatus'): # Delta Status -> Whenever a property changes a Delta Status is send
-            self.__on_DeltaStatus(msg)
-        if (msg.type == 'clearInverters'): # Unknown
-            self.__on_clearInverters(msg)
-        if (msg.type == 'updateInverter'): # Contains information of connected Photovoltaik inverter / powermeter
-            self.__on_updateInverter(msg)
-        if self._message_callback != None:
-            self._message_callback(self,wsapp,msg,message)
+        try:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug("Message received: %s", _mask_secrets(message))
+            msg=json.loads(message, object_hook=lambda d: SimpleNamespace(**d))
+            if (msg.type == 'hello'):  # Hello Message -> Received upon connection before auth
+                self.__on_hello(msg)
+            if (msg.type == 'authRequired'): # Auth Required -> Received after hello 
+                self.__on_auth(wsapp,msg)
+            if (msg.type == 'response'): # Response Message -> Received after sending a update and contains result of update
+                self.__on_response(msg)
+            if (msg.type == 'authSuccess'): #Auth Success -> Received after sending  correct authentication message
+                self.__on_AuthSuccess(msg)
+            if (msg.type == 'authError'): # AUth errot -> Received after sending incorrect authentication message (e.g. wrong password)
+                self.__on_AuthError(msg)
+            if (msg.type == 'fullStatus'): #Full Status -> Received after successfull connection. Contains all Properties of Wattpilot
+                self.__on_FullStatus(msg)
+            if (msg.type == 'deltaStatus'): # Delta Status -> Whenever a property changes a Delta Status is send
+                self.__on_DeltaStatus(msg)
+            if (msg.type == 'clearInverters'): # Unknown
+                self.__on_clearInverters(msg)
+            if (msg.type == 'updateInverter'): # Contains information of connected Photovoltaik inverter / powermeter
+                self.__on_updateInverter(msg)
+            if self._message_callback != None:
+                self._message_callback(self,wsapp,msg,message)
+        except Exception as e:
+            _LOGGER.warning("__on_message: failed to process message: %s (%s)", str(e), type(e).__name__)
 
 
     def __init__(self, ip ,password,serial=None,cloud=False):
@@ -710,6 +725,6 @@ class Wattpilot(object):
         self._wst=threading.Thread()
 
         websocket.setdefaulttimeout(10)
-        self._wsapp = websocket.WebSocketApp(self.url, on_message=self.__on_message, on_error=self.__on_error, on_close=self.__on_close)
+        self._wsapp = websocket.WebSocketApp(self.url, on_open=self.__on_open, on_message=self.__on_message, on_error=self.__on_error, on_close=self.__on_close)
         _LOGGER.info ("Wattpilot %s initilized",self.serial)
 

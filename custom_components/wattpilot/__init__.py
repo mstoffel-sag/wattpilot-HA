@@ -7,8 +7,8 @@ import asyncio
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_PARAMS
+from homeassistant.core import Event, HomeAssistant
+from homeassistant.const import CONF_PARAMS, EVENT_HOMEASSISTANT_STOP
 from homeassistant.loader import async_get_integration
 
 from .const import (
@@ -53,9 +53,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning("%s - async_setup_entry: Unable to determine %s integration version", entry.entry_id, DOMAIN)
         pass
 
+    charger = None
     try: 
         _LOGGER.debug("%s - async_setup_entry: Connecting charger", entry.entry_id)
-        charger = await async_ConnectCharger(entry.entry_id, entry.data)
+        config = {**entry.data, **entry.options}
+        charger = await async_ConnectCharger(entry.entry_id, config)
         # not ready rather than failed, so HA retries instead of giving up -
         # after a power cut HA boots before the charger does
         if charger == False:
@@ -64,7 +66,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: Connecting charger failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_DisconnectCharger(entry.entry_id, charger)
+        if charger:
+            await async_DisconnectCharger(entry.entry_id, charger)
         raise ConfigEntryNotReady(str(e)) from e
 
     try:
@@ -73,21 +76,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].setdefault(entry.entry_id, {})
         entry_data=hass.data[DOMAIN][entry.entry_id]
         entry_data[CONF_CHARGER]=charger
-        entry_data[CONF_PARAMS]=entry.data
+        entry_data[CONF_PARAMS]=config
         entry_data[CONF_DBG_PROPS]=False
         entry_data.setdefault(CONF_PUSH_ENTITIES, {})
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: Creating data store failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_DisconnectCharger(entry.entry_id, charger)
-        async_unload_entry(hass, entry)
+        await async_DisconnectCharger(entry.entry_id, charger)
+        await async_unload_entry(hass, entry)
         return False
+
+    _LOGGER.debug("%s - async_setup_entry: Register disconnect on Home Assistant stop", entry.entry_id)
+    async def async_stop_charger(event: Event) -> None:
+        """Disconnect the charger when Home Assistant stops."""
+        stop_charger = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get(CONF_CHARGER, None)
+        if stop_charger:
+            _LOGGER.debug("%s - async_stop_charger: Home Assistant stopping - disconnect charger", entry.entry_id)
+            await async_DisconnectCharger(entry.entry_id, stop_charger)
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_stop_charger))
 
     try:
         _LOGGER.debug("%s - async_setup_entry: Register option updates listener: %s ", entry.entry_id, FUNC_OPTION_UPDATES)
         entry_data[FUNC_OPTION_UPDATES] = entry.add_update_listener(options_update_listener) 
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: Register option updates listener failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_unload_entry(hass, entry)
+        await async_unload_entry(hass, entry)
         return False
 
     try:
@@ -95,7 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, SUPPORTED_PLATFORMS)
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: Setup trigger failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_unload_entry(hass, entry)
+        await async_unload_entry(hass, entry)
         return False
 
     try:
@@ -109,7 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("%s - async_setup_entry: charger does not provide roperties updater handler", entry.entry_id)
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: Could not register properties updater handler: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_unload_entry(hass, entry)
+        await async_unload_entry(hass, entry)
         return False
 
     try:
@@ -121,14 +133,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await async_registerService(hass, "set_next_trip", async_service_SetNextTrip)        
     except Exception as e:
         _LOGGER.error("%s - async_setup_entry: register services failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        async_unload_entry(hass, entry)
+        await async_unload_entry(hass, entry)
         return False
 
     _LOGGER.debug("%s - async_setup_entry: Completed", entry.entry_id)
     return True
 
 
-async def options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     try:
         _LOGGER.debug("%s - options_update_listener: update options and reload config entry", entry.entry_id)
@@ -136,13 +148,15 @@ async def options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> bo
         hass.data[DOMAIN].setdefault(entry.entry_id, {})
         entry_data=hass.data[DOMAIN][entry.entry_id]
         _LOGGER.debug("%s - options_update_listener: set new options", entry.entry_id)
-        entry_data[CONF_PARAMS]=entry.options
-        hass.config_entries.async_update_entry(entry, data=entry.options)
+        if entry.options:
+            entry_data[CONF_PARAMS]=entry.options
+            hass.config_entries.async_update_entry(entry, data=entry.options)
+        else:
+            _LOGGER.warning("%s - options_update_listener: options are empty - keep existing config data", entry.entry_id)
         _LOGGER.debug("%s - options_update_listener: async_reload entry", entry.entry_id)
         await hass.config_entries.async_reload(entry.entry_id)
     except Exception as e:
         _LOGGER.error("%s - options_update_listener: update options failed: %s (%s.%s)", entry.entry_id, str(e), e.__class__.__module__, type(e).__name__)
-        return False
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -154,9 +168,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("%s - async_unload_entry: unload platform: %s", entry.entry_id, platform)
             platform_ok = await asyncio.gather(*[hass.config_entries.async_forward_entry_unload(entry, platform)])
 
-            if not platform_ok:
+            if not all(platform_ok):
                 _LOGGER.error("%s - async_unload_entry: failed to unload: %s (%s)", entry.entry_id, platform, platform_ok)
-                all_ok = platform_ok
+                all_ok = False
 
         if all_ok:
             _LOGGER.debug("%s - async_unload_entry: Unload option updates listener: %s ", entry.entry_id, FUNC_OPTION_UPDATES)

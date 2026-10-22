@@ -53,3 +53,177 @@ class TestGetChargerProp:
 
     def test_known_int_property(self, charger):
         assert GetChargerProp(charger, "rbc") == 3
+
+
+class TestPropertyUpdateHandler:
+
+    @staticmethod
+    def _utils():
+        import sys
+        return sys.modules["custom_components.wattpilot.utils"]
+
+    @staticmethod
+    def _hass(stopping=False, closed=False):
+        from unittest import mock
+        hass = mock.MagicMock()
+        hass.is_stopping = stopping
+        hass.loop.is_closed.return_value = closed
+        hass.data = {"wattpilot": {"entry": {}}}
+        return hass
+
+    def test_returns_early_when_hass_is_stopping(self):
+        from unittest import mock
+        utils = self._utils()
+        with mock.patch.object(utils.asyncio, "run_coroutine_threadsafe") as run:
+            assert utils.PropertyUpdateHandler(self._hass(stopping=True), "entry", "car", 1) is None
+        run.assert_not_called()
+
+    def test_returns_early_when_loop_is_closed(self):
+        from unittest import mock
+        utils = self._utils()
+        with mock.patch.object(utils.asyncio, "run_coroutine_threadsafe") as run:
+            assert utils.PropertyUpdateHandler(self._hass(closed=True), "entry", "car", 1) is None
+        run.assert_not_called()
+
+    def test_scheduling_error_returns_none_not_nameerror(self):
+        from unittest import mock
+        utils = self._utils()
+        with mock.patch.object(utils.asyncio, "run_coroutine_threadsafe", side_effect=RuntimeError("Event loop is closed")):
+            handler = mock.MagicMock()
+            with mock.patch.object(utils, "async_PropertyUpdateHandler", handler):
+                assert utils.PropertyUpdateHandler(self._hass(), "entry", "car", 1) is None
+            handler.return_value.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_handler_error_returns_none_not_nameerror(self):
+        utils = self._utils()
+        hass = self._hass()
+        hass.data = {"wattpilot": {}}
+        assert await utils.async_PropertyUpdateHandler(hass, "missing_entry", "car", 1) is None
+
+
+class TestConnectChargerCleanup:
+
+    class _FakeCharger:
+        def __init__(self, **kwargs):
+            self.name = "fake"
+            self.connected = False
+            self.allPropsInitialized = False
+            self.connect_calls = 0
+            self.disconnect_calls = 0
+
+        def connect(self):
+            self.connect_calls += 1
+
+        def disconnect(self):
+            self.disconnect_calls += 1
+
+    @pytest.mark.asyncio
+    async def test_new_charger_disconnected_on_timeout(self):
+        import sys
+        from unittest import mock
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        created = []
+
+        def factory(**kwargs):
+            created.append(self._FakeCharger())
+            return created[-1]
+
+        with mock.patch.object(utils.wattpilot, "Wattpilot", factory, create=True):
+            result = await utils.async_ConnectCharger("entry", {"host": "192.0.2.1", "timeout": 0})
+        assert result is False
+        assert created[0].connect_calls == 1
+        assert created[0].disconnect_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_existing_charger_kept_on_failed_reconnect(self):
+        import sys
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        existing = self._FakeCharger()
+        result = await utils.async_ConnectCharger("entry", {"timeout": 0}, existing)
+        assert result is False
+        assert existing.disconnect_calls == 0
+
+
+class TestConnectChargerMissingConfig:
+
+    @pytest.mark.asyncio
+    async def test_missing_ip_returns_false_without_creating_charger(self):
+        import sys
+        from unittest import mock
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        factory = mock.MagicMock()
+        with mock.patch.object(utils.wattpilot, "Wattpilot", factory, create=True):
+            assert await utils.async_ConnectCharger("entry", {"connection": "local"}) is False
+        factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_serial_returns_false_without_creating_charger(self):
+        import sys
+        from unittest import mock
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        factory = mock.MagicMock()
+        with mock.patch.object(utils.wattpilot, "Wattpilot", factory, create=True):
+            assert await utils.async_ConnectCharger("entry", {"connection": "cloud"}) is False
+        factory.assert_not_called()
+
+
+class TestSelectEmptyState:
+
+    @staticmethod
+    def _select(entity_cfg):
+        import sys
+        from unittest import mock
+        from tests.conftest import _load_file_as_module
+        sys.modules.setdefault("homeassistant.components", mock.MagicMock())
+        if "homeassistant.components.select" not in sys.modules:
+            select_stub = types.ModuleType("homeassistant.components.select")
+            select_stub.SelectEntity = type("SelectEntity", (), {})
+            sys.modules["homeassistant.components.select"] = select_stub
+        mod = _load_file_as_module("custom_components/wattpilot/select.py", "custom_components.wattpilot.select")
+        entity = object.__new__(mod.ChargerSelect)
+        entity._charger_id = "charger"
+        entity._identifier = "ct"
+        entity._entity_cfg = entity_cfg
+        entity._opt_dict = {"default": "Standard", "kiaSoul": "Kia Soul"}
+        return entity
+
+    @pytest.mark.asyncio
+    async def test_empty_string_maps_to_configured_empty_state(self):
+        entity = self._select({"empty_state": "default"})
+        assert await entity._async_update_validate_platform_state("") == "Standard"
+
+    @pytest.mark.asyncio
+    async def test_empty_string_without_empty_state_is_unknown(self):
+        entity = self._select({})
+        assert await entity._async_update_validate_platform_state("") == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_empty_state_not_in_options_is_unknown(self):
+        entity = self._select({"empty_state": "doesNotExist"})
+        assert await entity._async_update_validate_platform_state("") == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_known_key_still_mapped(self):
+        entity = self._select({"empty_state": "default"})
+        assert await entity._async_update_validate_platform_state("kiaSoul") == "Kia Soul"
+
+
+class TestPropertyDebugSecrets:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("include", [True, ["cak"]])
+    async def test_cak_value_is_masked(self, include, caplog):
+        import sys
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        with caplog.at_level("WARNING"):
+            await utils.async_PropertyDebug("cak", "s3cr3t", include)
+        assert "s3cr3t" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_other_property_is_logged_with_value(self, caplog):
+        import sys
+        utils = sys.modules["custom_components.wattpilot.utils"]
+        with caplog.at_level("WARNING"):
+            await utils.async_PropertyDebug("car", "2", True)
+        assert "car => 2" in caplog.text
